@@ -1,0 +1,23 @@
+name: Packagist Sync
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify Packagist
+        env:
+          PACKAGIST_HOOK_URL: ${{ secrets.PACKAGIST_HOOK_URL }}
+        run: |
+          curl --fail --silent --show-error \
+            --request POST \
+            "$PACKAGIST_HOOK_URL"
