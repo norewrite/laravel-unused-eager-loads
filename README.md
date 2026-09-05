@@ -1,4 +1,4 @@
-# No/Rewrite Laravel Unused Eager Loads
+# No/Rewrite Runtime Laravel Unused Eager Load Detection
 
 A development-time Laravel package that detects Eloquent relationships which were **eager loaded but never consumed by PHP / Blade** during the request.
 
@@ -221,3 +221,4 @@ UNUSED_EAGER_LOADS_ENABLED=false
 ```
 
 The trait is fail-open: if the tracker is unavailable, ordinary Eloquent behavior continues.
+
