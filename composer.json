@@ -2,7 +2,7 @@
     "name": "norewrite/laravel-unused-eager-loads",
     "description": "Runtime detector for genuinely unused Eloquent eager-loaded relationships in Laravel/Blade applications.",
     "type": "library",
-    "license": "MIT",
+    "license": "GPL-3.0-or-later",
     "keywords": [
         "laravel",
         "eloquent",
