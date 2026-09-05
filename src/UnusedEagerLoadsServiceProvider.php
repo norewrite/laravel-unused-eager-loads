@@ -7,6 +7,7 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use NoRewrite\UnusedEagerLoads\Http\Middleware\TrackUnusedEagerLoads;
 use NoRewrite\UnusedEagerLoads\Reporting\RelationUsageReporter;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
 
 final class UnusedEagerLoadsServiceProvider extends ServiceProvider
 {
@@ -29,7 +30,7 @@ final class UnusedEagerLoadsServiceProvider extends ServiceProvider
         });
     }
 
-    public function boot(Router $router): void
+    public function boot(): void
     {
         $this->publishes([
             __DIR__.'/../config/unused-eager-loads.php' => config_path('unused-eager-loads.php'),
@@ -39,12 +40,12 @@ final class UnusedEagerLoadsServiceProvider extends ServiceProvider
             return;
         }
 
-        if (! (bool) config('unused-eager-loads.middleware.auto_register', true)) {
-            return;
-        }
+        if ($this->app->bound(HttpKernel::class)) {
+            $kernel = $this->app->make(HttpKernel::class);
 
-        foreach ((array) config('unused-eager-loads.middleware.groups', ['web']) as $group) {
-            $router->prependMiddlewareToGroup((string) $group, TrackUnusedEagerLoads::class);
+            if (method_exists($kernel, 'prependMiddleware')) {
+                $kernel->prependMiddleware(TrackUnusedEagerLoads::class);
+            }
         }
     }
 }
