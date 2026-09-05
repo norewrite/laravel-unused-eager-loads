@@ -1,74 +1,118 @@
-# No/Rewrite Runtime Laravel Unused Eager Load Detection
+# No/Rewrite Laravel Unused Eager Loads
+
+[![Tests](https://github.com/norewrite/laravel-unused-eager-loads/actions/workflows/tests.yml/badge.svg)](https://github.com/norewrite/laravel-unused-eager-loads/actions)
+[![Latest Stable Version](https://poser.pugx.org/norewrite/laravel-unused-eager-loads/v/stable)](https://packagist.org/packages/norewrite/laravel-unused-eager-loads)
+[![License](https://poser.pugx.org/norewrite/laravel-unused-eager-loads/license)](https://packagist.org/packages/norewrite/laravel-unused-eager-loads)
 
 A development-time Laravel package that detects Eloquent relationships which were **eager loaded but never consumed by PHP / Blade** during the request.
 
-v1 is intentionally server-side only. There is **no JavaScript instrumentation yet**.
+It is designed to find unnecessary eager loading without confusing genuine relation usage, lazy loading, or serialization with waste.
 
-## What v1 tracks
+Version 1 is intentionally server-side only. JavaScript consumption tracking is planned for a later version.
 
-- Eloquent eager loads performed by Laravel's eager-loading pipeline (`with`, model `$with`, `load`, `loadMissing`, nested eager loads).
-- Normal PHP / Blade relation property access such as `$boat->serviceLocations`.
-- Serialization separately from direct PHP / Blade usage.
-- Nested eager-load paths such as `comments.author`.
-- Lazy/on-demand loads are ignored.
-- Only a relation with **zero direct accesses and zero serialization usage across all tracked instances** is classified as `unused` and warning-eligible.
+## What it detects
 
-A relation accessed on only part of a result set is classified as `partial`, not wholly unused. Partial reporting is available but disabled by default.
+The package tracks eager-loaded Eloquent relationships created through normal Laravel mechanisms, including:
 
-## Why serialization is separate
+* `with()`
+* model `$with`
+* `load()`
+* `loadMissing()`
+* nested eager loads such as `comments.author`
 
-If an eager-loaded relation is included in `toArray()`, `toJson()`, or normal Eloquent JSON serialization, v1 cannot know whether browser JavaScript later consumes that relation. Treating it as unused would create a false positive.
+It then observes how those relations are used during the request.
 
-Therefore:
+A relation can be classified as:
 
-- direct PHP / Blade access => `used` / `partial`;
-- serialization without direct access => `serialization_only`;
-- neither direct access nor serialization => `unused`.
+| Classification       | Meaning                                                                   |
+| -------------------- | ------------------------------------------------------------------------- |
+| `used`               | Every tracked eager-loaded instance was accessed directly by PHP / Blade. |
+| `partial`            | Some instances were accessed, but others were not.                        |
+| `serialization_only` | The relation was serialized but never accessed directly by PHP / Blade.   |
+| `unused`             | The relation was neither accessed nor serialized.                         |
 
-JS consumption tracking is intentionally deferred to a later version.
+Only genuinely `unused` relations generate warnings by default.
+
+Lazy-loaded relations are ignored.
+
+## Why serialization is tracked separately
+
+Consider:
+
+```php
+$boats = Boat::with('serviceLocations')->get();
+
+return response()->json($boats);
+```
+
+PHP never directly accesses:
+
+```php
+$boat->serviceLocations
+```
+
+but the relation is part of the JSON response.
+
+The server cannot know whether browser-side JavaScript later consumes that data.
+
+Reporting this as unused would therefore be misleading.
+
+Instead, the package reports it separately:
+
+```text
+[unused-eager-loads] Serialization-only eager-loaded relationship: App\Models\Boat::serviceLocations
+```
+
+Serialization-only relationships are logged at `info` level by default and are **not treated as unused warnings**.
+
+JavaScript consumption tracking is intentionally deferred to a later release.
 
 ## Requirements
 
-- PHP 8.1+
-- Laravel 10, 11, 12, or 13
+PHP 8.1 or newer.
 
-Laravel 13 itself requires PHP 8.3+. The package keeps PHP 8.1 compatibility so the same package can also support Laravel 10.
+Supported Laravel versions:
 
-## Install
-
-For a local path repository while developing the package:
-
-```json
-{
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../laravel-unused-eager-loads"
-        }
-    ]
-}
+```text
+Laravel 10
+Laravel 11
+Laravel 12
+Laravel 13
 ```
 
-Then:
+Laravel 13 itself requires a newer PHP version, but the package retains PHP 8.1 compatibility for applications running supported earlier Laravel releases.
+
+## Installation
+
+Install the package as a development dependency:
 
 ```bash
-composer require --dev norewrite/laravel-unused-eager-loads:@dev
+composer require --dev norewrite/laravel-unused-eager-loads
+```
+
+Laravel package discovery registers the service provider automatically.
+
+Publish the configuration:
+
+```bash
 php artisan vendor:publish --tag=unused-eager-loads-config
 ```
 
-Enable it in `.env`:
+Then enable the detector in your local `.env`:
 
 ```dotenv
 UNUSED_EAGER_LOADS_ENABLED=true
 ```
 
-Laravel package discovery registers the service provider automatically.
+The detector is disabled by default.
 
 ## Add the tracking trait
 
-The package must intercept Eloquent relation property access. PHP does not provide a safe way for a package to inject that interception into every existing model class at runtime, so the host application's model hierarchy needs the trait.
+The package needs to observe normal Eloquent relationship property access.
 
-If your application has a shared base model, add it **once** there:
+PHP does not provide a safe way for a package to transparently inject this behavior into every existing Eloquent model, so the application's model hierarchy needs to use the supplied trait.
+
+If your application has a shared base model, add it once:
 
 ```php
 <?php
@@ -84,51 +128,47 @@ abstract class BaseModel extends Model
 }
 ```
 
-All models extending `BaseModel` are then instrumented.
+All models extending that base model are then tracked.
 
-If models extend `Illuminate\Database\Eloquent\Model` directly, add the trait to each model you want tracked.
-
-## Configuration
-
-Published config: `config/unused-eager-loads.php`.
-
-Important defaults:
+If your application models extend `Illuminate\Database\Eloquent\Model` directly, add the trait to each model you want the detector to inspect:
 
 ```php
-'enabled' => false,
+use NoRewrite\UnusedEagerLoads\Concerns\TracksRelationshipUsage;
 
-'middleware' => [
-    'auto_register' => true,
-    'groups' => ['web'],
-],
-
-'reporting' => [
-    'unused_level' => 'warning',
-    'serialization_only_level' => 'info',
-    'partial_level' => 'debug',
-    'report_serialization_only' => true,
-    'report_partial' => false,
-    'minimum_loaded' => 1,
-    'report_on_error_responses' => false,
-],
+class Boat extends Model
+{
+    use TracksRelationshipUsage;
+}
 ```
 
-`web` is the default group because v1 is focused on Laravel / Blade requests. You may add another middleware group if you deliberately want to inspect it.
+## Basic example
 
-## Example output
+Consider:
 
-Wholly unused:
+```php
+$boats = Boat::with('serviceLocations')->get();
+
+return view('boats.index', compact('boats'));
+```
+
+If the Blade view never accesses:
+
+```php
+$boat->serviceLocations
+```
+
+the package reports:
 
 ```text
 [unused-eager-loads] Unused eager-loaded relationship: App\Models\Boat::serviceLocations
 ```
 
-Context contains:
+The structured log context contains information such as:
 
 ```text
 method=GET
-path=boats/grid
-route=boat.grid
+path=boats
+route=boats.index
 model=App\Models\Boat
 root_model=App\Models\Boat
 relation=serviceLocations
@@ -141,84 +181,294 @@ serialization_percent=0.0
 classification=unused
 ```
 
-Serialization-only:
+If Blade uses the relationship:
 
-```text
-[unused-eager-loads] Serialization-only eager-loaded relationship: App\Models\Boat::serviceLocations
+```blade
+@foreach ($boat->serviceLocations as $location)
+    {{ $location->name }}
+@endforeach
 ```
 
-This is logged at `info` by default, **not warning**.
+it is counted as consumed and no unused warning is generated.
 
-Nested eager load:
+## Partial usage
+
+Suppose ten models eagerly load the same relation:
+
+```php
+$boats = Boat::with('serviceLocations')->get();
+```
+
+but only one model's relationship is accessed.
+
+That relation is classified as:
+
+```text
+partial
+```
+
+rather than:
+
+```text
+unused
+```
+
+This avoids claiming that the eager load was wholly unused when some of the loaded data was genuinely consumed.
+
+Partial reporting is disabled by default but can be enabled through configuration.
+
+## Nested eager loads
+
+Nested eager loads are tracked independently.
+
+For example:
+
+```php
+$articles = Article::with('comments.author')->get();
+```
+
+If Blade uses:
+
+```php
+$article->comments
+```
+
+but never uses:
+
+```php
+$comment->author
+```
+
+the package can report:
 
 ```text
 [unused-eager-loads] Unused eager-loaded relationship: App\Models\Article::comments.author
 ```
 
-The context also contains `model=App\Models\Comment` and `leaf_relation=author`.
+The report retains both the root model and the model owning the nested relationship.
+
+## Lazy loads are ignored
+
+This package is specifically an **unused eager-load detector**.
+
+A relationship loaded on demand:
+
+```php
+$post = Post::first();
+
+echo $post->author->name;
+```
+
+is therefore not treated as an eager-load candidate.
+
+The detector also suppresses eager loads that happen internally underneath a lazy-loaded relationship, including relationships automatically loaded through a nested model's `$with` property.
+
+## Serialization
+
+Normal Eloquent serialization is tracked separately from PHP / Blade access.
+
+This includes operations such as:
+
+```php
+$model->toArray();
+$model->toJson();
+
+return response()->json($model);
+```
+
+and Blade output such as:
+
+```blade
+@json($model)
+```
+
+Hidden relationships do not receive serialization credit when Eloquent excludes them from the serialized representation.
+
+## Configuration
+
+The published configuration file is:
+
+```text
+config/unused-eager-loads.php
+```
+
+Typical reporting defaults are:
+
+```php
+'enabled' => env('UNUSED_EAGER_LOADS_ENABLED', false),
+
+'reporting' => [
+    'unused_level' => 'warning',
+
+    'serialization_only_level' => 'info',
+
+    'partial_level' => 'debug',
+
+    'report_serialization_only' => true,
+
+    'report_partial' => false,
+
+    'minimum_loaded' => 1,
+
+    'report_on_error_responses' => false,
+],
+```
+
+The package attaches its request tracker to Laravel's HTTP lifecycle automatically when enabled.
+
+HTTP 5xx responses are ignored by default because an interrupted request cannot reliably prove that a relationship would have remained unused.
 
 ## Ignore rules
 
-Patterns use Laravel-style `*` wildcards:
+Models, relations, and nested relation paths can be excluded.
+
+Patterns support Laravel-style `*` wildcards.
+
+Example:
 
 ```php
 'ignore' => [
     'models' => [
         'App\\Models\\Audit*',
     ],
+
     'relations' => [
         'pivot',
         'media',
     ],
+
     'paths' => [
         '*.internalMetadata',
     ],
 ],
 ```
 
-`pivot` is ignored by default because Eloquent creates pivot relations internally for many-to-many relationships.
+The `pivot` relation is ignored by default because Eloquent creates pivot relationships internally for many-to-many relationships.
+
+## Logging
+
+Unused relationships are logged at `warning` level by default:
+
+```text
+[unused-eager-loads] Unused eager-loaded relationship: App\Models\Boat::serviceLocations
+```
+
+Serialization-only relationships default to `info`:
+
+```text
+[unused-eager-loads] Serialization-only eager-loaded relationship: App\Models\Boat::serviceLocations
+```
+
+Partial relationships default to `debug` when partial reporting is enabled:
+
+```text
+[unused-eager-loads] Partially used eager-loaded relationship: App\Models\Boat::serviceLocations
+```
+
+Structured context is attached to each report so normal Laravel logging infrastructure can route or process the results.
 
 ## How it works
 
-1. A terminable request middleware is prepended to the configured group and starts a scoped tracker.
-2. The model trait observes `setRelation()` calls.
-3. A short backtrace confirms the assignment happened inside Eloquent's eager-loading pipeline, so arbitrary manual `setRelation()` calls are not treated as eager loads.
-4. `getRelationValue()` records normal already-loaded relation property access.
-5. If an unloaded relation is requested, the tracker enters a lazy-resolution scope. The lazy relation and eager loads caused underneath that lazy request are ignored.
-6. `toArray()` marks only Eloquent's arrayable relations as serialized; hidden relations do not get serialization credit.
-7. Parent/child model links reconstruct nested paths such as `comments.author`.
-8. After the response is sent, the terminable middleware aggregates results and writes warnings/info according to classification. HTTP 5xx responses are skipped by default because an interrupted request cannot prove that a relation was genuinely unused.
+During an enabled HTTP request, the package starts a request-scoped relationship usage tracker.
 
-## Known v1 boundary
+The model trait observes Eloquent's `setRelation()` calls. A short backtrace is used to determine whether a relation assignment originated from Laravel's eager-loading pipeline rather than an arbitrary manual `setRelation()` call.
 
-The package detects normal Eloquent property access (`$model->relation`) used by PHP and Blade. Direct low-level reads such as `$model->getRelation('relation')` intentionally are not instrumented in v1 because Eloquent itself uses `getRelation()` internally while matching eager loads; instrumenting it naively creates false positives.
+When PHP or Blade accesses an already-loaded relationship through normal Eloquent property syntax:
 
-There is no JavaScript payload-consumption tracking in v1. A relation that is serialized but never consumed in the browser will remain `serialization_only` until JS instrumentation is added in a later version.
+```php
+$model->relation
+```
 
-## Tests
+the trait records that relationship as consumed.
+
+If an unloaded relationship is requested, the tracker enters a lazy-resolution scope so that the lazy relation itself — and eager loads triggered underneath it — are not treated as original eager-load candidates.
+
+When a model is serialized, the package records only relations that Eloquent actually includes in its arrayable relation output.
+
+Parent/child model links are retained so nested paths such as:
+
+```text
+comments.author
+```
+
+can be reconstructed.
+
+At the end of the HTTP lifecycle, tracked instances are aggregated and classified before reports are written.
+
+## Known limitations
+
+### Direct `getRelation()` access
+
+Normal Eloquent property access is tracked:
+
+```php
+$model->author;
+```
+
+Direct low-level access is not currently considered consumption:
+
+```php
+$model->getRelation('author');
+```
+
+Eloquent itself uses `getRelation()` internally while assembling eager-loaded graphs, so treating every direct call as application consumption would introduce false positives in the opposite direction.
+
+This remains a known v1 boundary.
+
+### JavaScript usage
+
+Version 1 does not instrument browser-side JavaScript.
+
+If an eager-loaded relation is serialized into a response but only JavaScript consumes it, the package reports:
+
+```text
+serialization_only
+```
+
+rather than:
+
+```text
+unused
+```
+
+Future JavaScript instrumentation can build on this distinction without changing the server-side eager-load tracking model.
+
+## Testing the package
+
+Clone the repository and install dependencies:
 
 ```bash
 composer install
+```
+
+Run the package test suite:
+
+```bash
 composer test
 ```
 
-The suite covers:
+or:
 
-- wholly unused eager loads;
-- Blade property access;
-- ignored lazy loads;
-- serialization-only classification;
-- nested eager-load paths;
-- partial usage being non-warning;
-- hidden relations not receiving false serialization credit.
+```bash
+vendor/bin/phpunit --testdox
+```
 
-## Production
+The test suite covers eager-load detection, PHP / Blade access, serialization, hidden relations, partial usage, lazy loading, nested eager loads, manual relation assignment, and reporting behavior.
 
-This is diagnostic instrumentation. Keep it disabled in normal production traffic unless you are deliberately profiling a controlled environment:
+The package is also tested against a full Laravel integration application containing a broader matrix of real controller, Blade, JSON, nested relationship, `$with`, `load()`, `loadMissing()`, empty relationship, nullable relationship, many-to-many, and error-response scenarios.
+
+## Production usage
+
+This package performs diagnostic instrumentation and is primarily intended for development, testing, staging, and controlled profiling.
+
+Keep it disabled during normal production traffic:
 
 ```dotenv
 UNUSED_EAGER_LOADS_ENABLED=false
 ```
 
-The trait is fail-open: if the tracker is unavailable, ordinary Eloquent behavior continues.
+The tracking trait is fail-open. If the package tracker is unavailable or disabled, normal Eloquent behavior continues unchanged.
 
+## License
+
+No/Rewrite Laravel Unused Eager Loads is open-source software licensed under the MIT license.
